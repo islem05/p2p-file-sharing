@@ -75,8 +75,9 @@ Ouvrez un terminal :
 ```bash
 cd server
 npm install
-node index.js
+node index.js 
 
+```
 ### 2️⃣ Démarrer le Client (Frontend)
 
 Ouvrez un second terminal :
@@ -85,7 +86,7 @@ Ouvrez un second terminal :
 cd client   # ou le nom de votre dossier frontend
 npm install
 npm run dev
-
+```
 L’application sera accessible via l’URL locale affichée dans le terminal  
 (exemple : `http://localhost:5173`).
 
