@@ -8,6 +8,12 @@ Le projet utilise **WebRTC** pour le transfert de données et **Socket.io** pour
 
 ---
 
+## 🏗️ Architecture de l’application
+
+![Diagramme d’architecture P2P WebRTC](assets/diagram-export-1-29-2026-4_05_33-AM.png)
+
+> Diagramme illustrant la signalisation via Socket.io et le transfert direct P2P via WebRTC (DataChannel).
+
 ## ✨ Fonctionnalités
 
 - 🔐 **Authentification sécurisée**  
