@@ -1,115 +1,118 @@
 const express = require('express');
+const app = express();
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
-const bcrypt = require('bcrypt'); // For password security [cite: 15]
 
-const app = express();
 app.use(cors());
 
 const server = http.createServer(app);
+
 const io = new Server(server, {
-    cors: {
-        origin: "http://localhost:5173", // Allow the React Client to connect
-        methods: ["GET", "POST"]
+  cors: {
+    origin: "http://localhost:5173",
+    methods: ["GET", "POST"],
+  },
+});
+
+let users = {};
+let userCredentials = {}; 
+let filesMetadata = [];
+
+io.on("connection", (socket) => {
+  console.log(`User Connected: ${socket.id}`);
+
+  // Gestion de l'inscription
+  socket.on("register", (data) => {
+    if (userCredentials[data.username]) {
+      socket.emit("auth_error", "L'utilisateur existe déjà ! Essayez de vous connecter.");
+      return;
     }
+
+    userCredentials[data.username] = data.password;
+    console.log(`Nouvel utilisateur enregistré : ${data.username}`);
+    
+    socket.emit("auth_success", "Inscription réussie ! Veuillez vous connecter.");
+  });
+
+  // Gestion de la connexion
+  socket.on("login", (data) => {
+    if (!userCredentials[data.username]) {
+      socket.emit("auth_error", "Utilisateur introuvable. Veuillez vous inscrire.");
+      return;
+    }
+
+    if (userCredentials[data.username] !== data.password) {
+      socket.emit("auth_error", "Mot de passe incorrect !");
+      return;
+    }
+
+    users[socket.id] = data.username;
+    console.log(`Utilisateur connecté : ${data.username} (${socket.id})`);
+    
+    socket.emit("login_success", { 
+        message: "Connexion réussie", 
+        username: data.username,
+        socketId: socket.id 
+    });
+  });
+
+  // Publication des fichiers
+  socket.on("publish_files", (newFiles) => {
+    const username = users[socket.id];
+    if (!username) return;
+
+    const filesWithOwner = newFiles.map(file => ({
+        ...file,
+        ownerId: socket.id,
+        username: username
+    }));
+
+    // Évite les doublons : supprime les anciens fichiers de cet utilisateur avant d'ajouter les nouveaux
+    filesMetadata = filesMetadata.filter(f => f.ownerId !== socket.id);
+    filesMetadata.push(...filesWithOwner);
+    
+    console.log(`${username} a mis à jour ses fichiers. Total : ${filesMetadata.length}`);
+  });
+
+  // Recherche de fichiers
+  socket.on("search", (query) => {
+    const results = filesMetadata.filter(file => 
+        file.fileName.toLowerCase().includes(query.toLowerCase())
+    );
+    socket.emit("search_results", results);
+  });
+
+  // Signalisation WebRTC
+  socket.on("offer", (payload) => {
+      io.to(payload.target).emit("offer", {
+          sdp: payload.sdp,
+          callerId: socket.id
+      });
+  });
+
+  socket.on("answer", (payload) => {
+      io.to(payload.target).emit("answer", {
+          sdp: payload.sdp,
+          responderId: socket.id
+      });
+  });
+
+  socket.on("ice-candidate", (payload) => {
+      io.to(payload.target).emit("ice-candidate", {
+          candidate: payload.candidate,
+          senderId: socket.id
+      });
+  });
+
+  // Déconnexion
+  socket.on("disconnect", () => {
+    console.log("User Disconnected", socket.id);
+    delete users[socket.id];
+    filesMetadata = filesMetadata.filter(f => f.ownerId !== socket.id);
+  });
 });
 
-// --- IN-MEMORY DATABASE ---
-// In a real app, use PostgreSQL/MongoDB. For this project, variables are fine.
-// Structure: { username: "hashed_password" }
-const registeredUsers = {}; 
-
-// Structure: { socketId: { username: "alice", files: [] } }
-const activePeers = {}; 
-
-io.on('connection', (socket) => {
-    console.log(`User Connected: ${socket.id}`);
-
-    // --- REQUIREMENT: AUTHENTICATION [cite: 13, 34] ---
-    socket.on('register', async ({ username, password }) => {
-        if (registeredUsers[username]) {
-            socket.emit('auth_error', 'User already exists');
-            return;
-        }
-        // Hash password so it's not stored in clear text [cite: 16, 33]
-        const hashedPassword = await bcrypt.hash(password, 10);
-        registeredUsers[username] = hashedPassword;
-        
-        socket.emit('auth_success', 'Registration successful! Please login.');
-    });
-
-    socket.on('login', async ({ username, password }) => {
-        const storedHash = registeredUsers[username];
-        
-        if (!storedHash) {
-            socket.emit('auth_error', 'User not found');
-            return;
-        }
-
-        const isMatch = await bcrypt.compare(password, storedHash);
-        
-        if (isMatch) {
-            // Save this user as "Active"
-            activePeers[socket.id] = { username, files: [] };
-            socket.emit('login_success', { username });
-            console.log(`${username} logged in.`);
-        } else {
-            socket.emit('auth_error', 'Incorrect password');
-        }
-    });
-
-    // --- REQUIREMENT: PUBLISH SHARED FILES [cite: 9, 39] ---
-    // User sends their list of files to the server
-    socket.on('publish_files', (fileList) => {
-        if (activePeers[socket.id]) {
-            activePeers[socket.id].files = fileList;
-            console.log(`User ${activePeers[socket.id].username} shared ${fileList.length} files.`);
-            
-            // Optional: Broadcast to everyone that new files are available
-            io.emit('new_files_available'); 
-        }
-    });
-
-    // --- REQUIREMENT: SEARCH [cite: 11, 26] ---
-    socket.on('search', (keyword) => {
-        const results = [];
-        
-        // Loop through all active peers to find matches
-        for (const [peerId, peerData] of Object.entries(activePeers)) {
-            // Don't search the user's own files
-            if (peerId === socket.id) continue;
-
-            const userFiles = peerData.files || [];
-            
-            // Check if any file matches the keyword
-            const matches = userFiles.filter(file => 
-                file.fileName.toLowerCase().includes(keyword.toLowerCase()) || 
-                file.description.toLowerCase().includes(keyword.toLowerCase())
-            );
-
-            if (matches.length > 0) {
-                results.push({
-                    username: peerData.username,
-                    peerId: peerId, // We need this ID to connect P2P later
-                    files: matches
-                });
-            }
-        }
-        
-        socket.emit('search_results', results);
-    });
-
-    // --- REQUIREMENT: HANDLING DISCONNECTS  ---
-    // If a user disconnects, remove their files from the search index
-    socket.on('disconnect', () => {
-        if (activePeers[socket.id]) {
-            console.log(`${activePeers[socket.id].username} disconnected.`);
-            delete activePeers[socket.id];
-        }
-    });
-});
-
-server.listen(3000, () => {
-    console.log('CENTRAL SERVER running on port 3000');
+server.listen(3001, () => {
+  console.log("SERVEUR EN LIGNE SUR LE PORT 3001");
 });
